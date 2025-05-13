@@ -1,23 +1,25 @@
 import streamlit as st
 import pandas as pd
 from openai import OpenAI
-from io import BytesIO
-from datetime import datetime
 from gtts import gTTS
 import os
 
 # ---- CONFIGURATION ----
-st.set_page_config(page_title="Monthly P&L Financial Review", layout="wide")
-client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+st.set_page_config(page_title="📊 Monthly P&L Financial Review", layout="wide")
+
+# Set OpenAI key from Streamlit secrets
+os.environ["OPENAI_API_KEY"] = st.secrets["OPENAI_API_KEY"]
+client = OpenAI()
 
 # ---- PAGE HEADER ----
 st.title("📊 Monthly P&L Financial Review")
 st.markdown("Upload your Excel-based Profit & Loss statement. A CFO-style report will be generated along with an audio summary.")
 
+# ---- FILE UPLOAD ----
 uploaded_file = st.file_uploader("📁 Upload P&L Excel File", type=["xlsx"])
 summary_text = ""
 
-# ---- PROCESS FILE AND GENERATE SUMMARY ----
+# ---- SUMMARY GENERATION FUNCTION ----
 def generate_summary(df):
     df_clean = df.dropna(subset=["Actual", "Budget"]).copy()
     df_clean["Variance"] = df_clean["Actual"] - df_clean["Budget"]
@@ -41,6 +43,7 @@ Create a 3-5 minute audio-style summary in plain English. Highlight revenue grow
     )
     return response.choices[0].message.content
 
+# ---- MAIN LOGIC ----
 if uploaded_file:
     df = pd.read_excel(uploaded_file, engine="openpyxl")
     st.subheader("📄 Preview of Uploaded File")
@@ -61,13 +64,13 @@ if "summary_text" in st.session_state:
         st.audio(audio_bytes, format="audio/mp3")
         os.remove(audio_file)
 
-# ---- CHAT Q&A ----
+# ---- OPTIONAL CHAT-BASED Q&A ----
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 
 st.subheader("💬 Ask Questions About This Month's Financials")
-
 question = st.text_input("Type your question and press Enter")
+
 if st.button("Ask") and question:
     response = client.chat.completions.create(
         model="gpt-4o",
@@ -79,7 +82,6 @@ if st.button("Ask") and question:
     answer = response.choices[0].message.content
     st.session_state.chat_history.append((question, answer))
 
-# Display chat history
 for q, a in reversed(st.session_state.chat_history):
     st.markdown(f"**Q:** {q}")
     st.markdown(f"**A:** {a}")
