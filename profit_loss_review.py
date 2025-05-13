@@ -1,56 +1,57 @@
 import streamlit as st
 import pandas as pd
-import openai
+from openai import OpenAI
 from io import BytesIO
 from datetime import datetime
 from gtts import gTTS
 import os
 
-# ---- Config ----
-st.set_page_config(page_title="Monthly Financial Summary", layout="wide")
-openai.api_key = st.secrets["OPENAI_API_KEY"]
+# ---- CONFIGURATION ----
+st.set_page_config(page_title="Monthly P&L Financial Review", layout="wide")
+client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 
-# ---- UI ----
+# ---- PAGE HEADER ----
 st.title("📊 Monthly P&L Financial Review")
 st.markdown("Upload your Excel-based Profit & Loss statement. A CFO-style report will be generated along with an audio summary.")
 
 uploaded_file = st.file_uploader("📁 Upload P&L Excel File", type=["xlsx"])
-
 summary_text = ""
 
-if uploaded_file:
-    df = pd.read_excel(uploaded_file)
-    st.subheader("📄 Preview of Uploaded File")
-    st.dataframe(df.head())
+# ---- PROCESS FILE AND GENERATE SUMMARY ----
+def generate_summary(df):
+    df_clean = df.dropna(subset=["Actual", "Budget"]).copy()
+    df_clean["Variance"] = df_clean["Actual"] - df_clean["Budget"]
+    df_clean["Variance %"] = df_clean["Variance"] / df_clean["Budget"] * 100
 
-    # ---- Prepare Input for GPT ----
-    def generate_summary(df):
-        df_clean = df.dropna(subset=["Actual", "Budget"])
-        df_clean["Variance"] = df_clean["Actual"] - df_clean["Budget"]
-        df_clean["Variance %"] = df_clean["Variance"] / df_clean["Budget"] * 100
+    key_items = df_clean[abs(df_clean["Variance %"]) > 10].copy()
+    key_items_str = key_items.to_string(index=False)
 
-        key_items = df_clean[abs(df_clean["Variance %"]) > 10].copy()
-        key_items_str = key_items.to_string(index=False)
-
-        prompt = f"""
-You are a CFO summarizing the monthly financials to the CEO of a small business. Below is the P&L breakdown with actuals, budgets, and variance:
+    prompt = f"""
+You are a CFO summarizing monthly financials to a CEO. Below is the P&L summary showing actuals vs. budget with variance:
 
 {key_items_str}
 
-Create a concise verbal report (like a podcast), under 5 minutes, using plain language. Focus on areas where performance diverged from the budget, major cost concerns, strong revenue performance, and cash management implications. Avoid financial jargon unless necessary.
+Create a 3-5 minute audio-style summary in plain English. Highlight revenue growth, cost overruns, savings, cash flow trends, and any major areas to watch. Use a confident, conversational tone as if you're presenting during a board meeting.
 """
-        response = openai.ChatCompletion.create(
-            model="gpt-4o",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.7
-        )
-        return response.choices[0].message.content
+
+    response = client.chat.completions.create(
+        model="gpt-4o",
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.7
+    )
+    return response.choices[0].message.content
+
+if uploaded_file:
+    df = pd.read_excel(uploaded_file, engine="openpyxl")
+    st.subheader("📄 Preview of Uploaded File")
+    st.dataframe(df)
 
     if st.button("📊 Generate CFO Summary"):
         summary_text = generate_summary(df)
         st.session_state["summary_text"] = summary_text
-        st.text_area("📝 CFO-Style Summary", summary_text, height=300)
+        st.text_area("📝 CFO Summary Transcript", summary_text, height=300)
 
+# ---- AUDIO PLAYBACK ----
 if "summary_text" in st.session_state:
     if st.button("🔊 Listen to Summary"):
         tts = gTTS(st.session_state["summary_text"])
@@ -60,27 +61,25 @@ if "summary_text" in st.session_state:
         st.audio(audio_bytes, format="audio/mp3")
         os.remove(audio_file)
 
-# ---- Optional: Chat Q&A ----
+# ---- CHAT Q&A ----
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 
 st.subheader("💬 Ask Questions About This Month's Financials")
 
-question = st.text_input("Type your question:")
+question = st.text_input("Type your question and press Enter")
 if st.button("Ask") and question:
-    chat_prompt = f"You are a CFO reviewing the company's P&L. Here's the user's question: {question}"
-
-    response = openai.ChatCompletion.create(
+    response = client.chat.completions.create(
         model="gpt-4o",
         messages=[
-            {"role": "system", "content": "You are a CFO answering financial questions based on a P&L."},
-            {"role": "user", "content": chat_prompt}
+            {"role": "system", "content": "You are a CFO answering questions based on the company's P&L."},
+            {"role": "user", "content": question}
         ]
     )
-
     answer = response.choices[0].message.content
     st.session_state.chat_history.append((question, answer))
 
+# Display chat history
 for q, a in reversed(st.session_state.chat_history):
     st.markdown(f"**Q:** {q}")
     st.markdown(f"**A:** {a}")
