@@ -3,25 +3,28 @@ import pandas as pd
 import openai
 from io import BytesIO
 from datetime import datetime
+from gtts import gTTS
+import os
 
 # ---- Config ----
 st.set_page_config(page_title="Monthly Financial Summary", layout="wide")
 openai.api_key = st.secrets["OPENAI_API_KEY"]
 
 # ---- UI ----
-st.title("Monthly P&L Review")
-st.markdown("Upload your Excel-based Profit & Loss statement for a CFO-style financial summary.")
+st.title("📊 Monthly P&L Financial Review")
+st.markdown("Upload your Excel-based Profit & Loss statement. A CFO-style report will be generated along with an audio summary.")
 
-uploaded_file = st.file_uploader("Upload P&L Excel File", type=["xlsx"])
+uploaded_file = st.file_uploader("📁 Upload P&L Excel File", type=["xlsx"])
+
+summary_text = ""
 
 if uploaded_file:
     df = pd.read_excel(uploaded_file)
-    st.subheader("Preview of Uploaded File")
+    st.subheader("📄 Preview of Uploaded File")
     st.dataframe(df.head())
 
     # ---- Prepare Input for GPT ----
     def generate_summary(df):
-        # Basic assumption: P&L has columns: Category | Actual | Budget
         df_clean = df.dropna(subset=["Actual", "Budget"])
         df_clean["Variance"] = df_clean["Actual"] - df_clean["Budget"]
         df_clean["Variance %"] = df_clean["Variance"] / df_clean["Budget"] * 100
@@ -43,24 +46,29 @@ Create a concise verbal report (like a podcast), under 5 minutes, using plain la
         )
         return response.choices[0].message.content
 
-    if st.button("Generate CFO Summary"):
+    if st.button("📊 Generate CFO Summary"):
         summary_text = generate_summary(df)
-        st.subheader("CFO-Style Audio Summary")
-        st.text_area("Transcript", summary_text, height=300)
+        st.session_state["summary_text"] = summary_text
+        st.text_area("📝 CFO-Style Summary", summary_text, height=300)
 
-        # Optionally generate TTS with third-party service
-        st.markdown("*You can now copy this transcript into a voice generation tool like ElevenLabs, Play.ht, or Amazon Polly to create your audio snippet.*")
+if "summary_text" in st.session_state:
+    if st.button("🔊 Listen to Summary"):
+        tts = gTTS(st.session_state["summary_text"])
+        audio_file = "summary_audio.mp3"
+        tts.save(audio_file)
+        audio_bytes = open(audio_file, "rb").read()
+        st.audio(audio_bytes, format="audio/mp3")
+        os.remove(audio_file)
 
-# ---- Optional: Add Q&A Interface ----
+# ---- Optional: Chat Q&A ----
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 
-st.subheader("Ask Questions About This Month's Financials")
+st.subheader("💬 Ask Questions About This Month's Financials")
 
 question = st.text_input("Type your question:")
 if st.button("Ask") and question:
     chat_prompt = f"You are a CFO reviewing the company's P&L. Here's the user's question: {question}"
-    chat_history_text = "\n".join([f"Q: {q}\nA: {a}" for q, a in st.session_state.chat_history])
 
     response = openai.ChatCompletion.create(
         model="gpt-4o",
