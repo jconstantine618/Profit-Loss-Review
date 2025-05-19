@@ -1,99 +1,162 @@
+# profit_loss_review.py  ────────────────────────────────────────────
 import os
-import streamlit as st
-import pandas as pd
+import re
+import tempfile
+
+import numpy as np
 import openai
+import pandas as pd
+import streamlit as st
 from gtts import gTTS
 
-# ---------- CONFIG ----------
+# ── PAGE CONFIG ───────────────────────────────────────────────────
 st.set_page_config(page_title="📊 Monthly P&L Financial Review", layout="wide")
 
-# Read API key from Streamlit secrets
+# ── OPENAI KEY ────────────────────────────────────────────────────
 openai.api_key = st.secrets["OPENAI_API_KEY"]
 
-# ---------- PAGE HEADER ----------
-st.title("📊 Monthly P&L Financial Review")
-st.markdown(
-    "Upload an **Excel** Profit & Loss statement with ‘Actual’ and ‘Budget’ columns. "
-    "I’ll create a CFO‑style summary and a playable audio snippet, then you can ask follow‑up questions. "
-)
+# ── HELPERS ───────────────────────────────────────────────────────
+MONTH_RE = re.compile(r"(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)", re.I)
 
-# ---------- FILE UPLOAD ----------
-uploaded_file = st.file_uploader("📁 Upload P&L Excel File (.xlsx)", type=["xlsx"])
 
-# ---------- FUNCTIONS ----------
+def load_pl(file) -> pd.DataFrame:
+    """Load a QuickBooks ‘P&L by Month’ OR simple Actual/Budget sheet."""
+    # read raw with no header
+    raw = pd.read_excel(file, header=None, engine="openpyxl")
+
+    # find the first row that looks like the month header
+    header_idx = None
+    for idx, row in raw.iterrows():
+        if sum(bool(MONTH_RE.search(str(cell))) for cell in row) >= 3:
+            header_idx = idx
+            break
+
+    if header_idx is None:  # fall back to first row as header
+        df = pd.read_excel(file, engine="openpyxl")
+    else:
+        df = pd.read_excel(file, header=header_idx, engine="openpyxl")
+
+    # normalise first (category) column name
+    first_col = df.columns[0]
+    df = df.rename(columns={first_col: "Category"})
+
+    # drop completely empty rows & forward‑fill category hierarchy
+    df = df.dropna(how="all").copy()
+    df["Category"] = df["Category"].ffill()
+
+    return df
+
+
 def build_summary(df: pd.DataFrame) -> str:
-    """Return a board‑meeting‑style CFO summary (≈5‑min script)."""
-    # Clean / calc variance
-    df = df.dropna(subset=["Actual", "Budget"]).copy()
-    df["Variance"] = df["Actual"] - df["Budget"]
-    df["Variance %"] = df["Variance"] / df["Budget"] * 100
+    """Return a ≈5‑minute, board‑ready CFO narrative."""
+    num_cols = df.select_dtypes(include="number").columns
 
-    # Focus on big movers (> ±10 %)
-    key_rows = df[abs(df["Variance %"]) >= 10]
-    table_txt = key_rows.to_string(index=False)
+    # If an Actual/Budget layout exists, use it; otherwise pick last two months
+    if {"Actual", "Budget"}.issubset(num_cols):
+        current_col, compare_col = "Actual", "Budget"
+    else:
+        # ignore a trailing 'Total' column if present
+        candidates = [c for c in num_cols if "total" not in str(c).lower()]
+        candidates = candidates or list(num_cols)  # fallback
+        current_col = candidates[-1]
+        compare_col = candidates[-2] if len(candidates) >= 2 else None
+
+    df_work = df[["Category"] + num_cols.tolist()].copy()
+
+    if compare_col:
+        df_work["Variance"] = df_work[current_col] - df_work[compare_col]
+        df_work["Variance %"] = (
+            df_work["Variance"] / df_work[compare_col].replace({0: np.nan}) * 100
+        )
+        key_rows = df_work[df_work["Variance %"].abs() >= 10]
+    else:
+        key_rows = df_work.copy()
+
+    # format a small text table for GPT
+    display_cols = ["Category", current_col]
+    if compare_col:
+        display_cols += [compare_col, "Variance", "Variance %"]
+    table_txt = key_rows[display_cols].to_string(index=False)
 
     prompt = f"""
-You are a CFO summarizing monthly financial results for the CEO.
+You are a CFO preparing a month‑end briefing for the CEO.
 
-P&L items with >10% variance vs. budget:
+Here are the line items with >10% variance (or the most material figures) comparing **{current_col}** with **{compare_col or 'Prior Period'}**:
+
 {table_txt}
 
-Give a confident, plain‑English narrative (no more than ~5 minutes read aloud). 
-Highlight revenue trends, margin pressure, cost overruns/savings, and cash‑flow implications. 
-Close with two or three action items for next month.
+Craft a confident, plain‑English narrative (≈400‑600 words, ~5 min read aloud).  
+Highlight: revenue trends, margins, cost overruns / savings, cash‑flow implications.  
+Close with 2‑3 clear action items for next month. Avoid jargon.
 """
 
-    resp = openai.chat.completions.create(
+    response = openai.chat.completions.create(
         model="gpt-4o",
         messages=[{"role": "user", "content": prompt}],
-        temperature=0.7,
+        temperature=0.5,
     )
-    return resp.choices[0].message.content.strip()
+    return response.choices[0].message.content.strip()
+
 
 def play_text(text: str):
-    """Generate TTS and stream back to user."""
+    """Generate TTS, stream it, then clean up."""
     tts = gTTS(text)
-    mp3_path = "summary_audio.mp3"
-    tts.save(mp3_path)
-    with open(mp3_path, "rb") as f:
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3")
+    tts.save(tmp.name)
+    with open(tmp.name, "rb") as f:
         st.audio(f.read(), format="audio/mp3")
-    os.remove(mp3_path)
+    os.remove(tmp.name)
 
-# ---------- MAIN ----------
-if uploaded_file:
-    df = pd.read_excel(uploaded_file, engine="openpyxl")
+
+# ── UI ────────────────────────────────────────────────────────────
+st.title("📊 Monthly P&L Financial Review")
+
+st.markdown(
+    """
+Upload an **Excel** Profit & Loss statement (QuickBooks “by Month” export or a
+sheet with “Actual” and “Budget” columns).  
+I’ll give you a CFO‑style summary & an optional audio playback, then you can ask follow‑up questions.
+"""
+)
+
+uploaded = st.file_uploader("📁 Upload P&L (.xlsx)", type="xlsx")
+
+if uploaded:
+    df = load_pl(uploaded)
     st.subheader("📄 P&L Preview")
-    st.dataframe(df)
+    st.dataframe(df, use_container_width=True)
 
-    if st.button("📊 Generate CFO Summary"):
+    if st.button("📝 Generate CFO Summary"):
         summary = build_summary(df)
         st.session_state["summary"] = summary
-        st.text_area("📝 CFO Summary Script", summary, height=300)
+        st.text_area("CFO Summary", summary, height=320)
 
-# ---------- LISTEN BUTTON ----------
+# — LISTEN —
 if "summary" in st.session_state:
     if st.button("🔊 Listen to Summary"):
         play_text(st.session_state["summary"])
 
-# ---------- Q&A CHAT ----------
+# — Q&A —
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 
-st.subheader("💬 Ask the CFO a question")
-user_q = st.text_input("Your question")
+st.subheader("💬 Ask a follow‑up question")
+user_q = st.text_input("Question")
 
 if st.button("Ask") and user_q:
-    response = openai.chat.completions.create(
+    resp = openai.chat.completions.create(
         model="gpt-4o",
         messages=[
-            {"role": "system", "content": "You are a CFO answering questions about a company's P&L."},
+            {
+                "role": "system",
+                "content": "You are a CFO answering questions about the company's P&L.",
+            },
             {"role": "user", "content": user_q},
         ],
     )
-    answer = response.choices[0].message.content.strip()
+    answer = resp.choices[0].message.content.strip()
     st.session_state.chat_history.append((user_q, answer))
 
-# Show history
 for q, a in reversed(st.session_state.chat_history):
     st.markdown(f"**Q:** {q}")
     st.markdown(f"**A:** {a}")
