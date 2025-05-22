@@ -29,7 +29,7 @@ from gtts import gTTS
 
 # ── CONFIG ─────────────────────────────────────────────────────────
 st.set_page_config(page_title="📊 Monthly P&L Financial Review", layout="wide")
-openai.api_key = st.secrets["OPENAI_API_KEY"]
+openai.api_key = os.getenv("OPENAI_API_KEY")
 
 MONTH_RE = re.compile(r"^(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{4}$", re.I)
 YTD_RE = re.compile(r"\b(YTD|Year\s*to\s*Date|Total)\b", re.I)
