@@ -144,6 +144,13 @@ Write 400‑600 words covering:
 • 2‑3 clear action items.
 
 Avoid jargon; explicitly flag any MTD caveats.
+Based on the attached Profit & Loss statements (month-on-month or YTD by month) and the Balance Sheet, please provide a clear and simple analysis of the business's financial health. Focus on key takeaways that a non-finance business owner can understand. Specifically, please highlight:
+
+Profitability trends: Are we making more or less money over time? What are the main drivers of these changes (e.g., increased sales, higher costs)?
+Liquidity: Do we have enough readily available cash to meet our short-term obligations?
+Overall financial position: What does the Balance Sheet tell us about our assets, liabilities, and equity? Are there any areas of concern or strength?
+Key ratios (explained simply): If possible, point out 1-2 simple but important ratios (like a very basic profitability or liquidity indicator) and explain what they mean for the business.
+Please avoid jargon and explain everything in plain language.
 """
 
     resp = openai.chat.completions.create(
